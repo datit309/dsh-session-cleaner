@@ -38,5 +38,13 @@
     "session-doctor"
   ],
   "author": "datit309",
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/datit309/dsh-session-cleaner.git"
+  },
+  "bugs": {
+    "url": "https://github.com/datit309/dsh-session-cleaner/issues"
+  },
+  "homepage": "https://github.com/datit309/dsh-session-cleaner#readme"
 }
