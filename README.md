@@ -1,26 +1,31 @@
 # 🩺 DSH Session Cleaner & Doctor
 
-Auto-detect, unstick, and safely clean/delete corrupted or error-stuck sessions in **DeepSeek Harness (DSH)**.
+Auto-detect, unstick, backup, and safely recover or clean sessions in **DeepSeek Harness (DSH)**.
 
 ## ✨ Tính năng chính
 
 - 🔍 **Tự động quét và phát hiện session bị kẹt**: Quét toàn bộ `~/.dsh/sessions/` và `workspace.json`, giải mã Zstandard native (`node:zlib`) và phát hiện chính xác các session bị văng lỗi Protobuf 400 (`INVALID_ARGUMENT`), timeout hoặc crash tool-loop.
-- 🩹 **Cứu session (Unstick Rollback)**: Thay vì phải xóa bỏ toàn bộ session và mất hết lịch sử chat/code, tính năng này tự động rollback lượt lỗi cuối, dọn sạch bộ nhớ cache để bạn có thể tiếp tục chat bình thường!
-- 🗑️ **Xóa sạch vĩnh viễn (Deep Clean)**: Xóa triệt để thư mục session, đồng bộ lại danh sách trong `workspace.json`, dọn dẹp `session_projcache` và bắn event WebSocket `api-session/removed` để giao diện DSH Web cập nhật tức thì không cần F5.
-- 🧹 **Xóa 1-click toàn bộ session kẹt (Bulk Clean)**: Dọn sạch tất cả session rác bị lỗi chỉ với 1 thao tác.
-- 🖥️ **Tích hợp giao diện Web DSH**: Tab **Session Doctor** ngay trên Right Sidebar và nút cảnh báo 🚨 trên thanh tiêu đề khi phát hiện có session bị kẹt.
-- 🤖 **Agent Tool (`session_cleaner`)**: Cho phép AI Agent tự chẩn đoán và dọn dẹp session theo yêu cầu.
-- ⚡ **CLI tiện lợi**: Dễ dàng chạy trực tiếp từ Terminal.
+- 🩹 **Cứu session (Deep Unstick & Rollback)**:
+  - Tự động **sao lưu an toàn** sang `~/.dsh/session-backups/` trước khi sửa.
+  - Phân tích chuỗi lỗi ở đuôi session và rollback chính xác về lượt thành công cuối.
+  - Mã hóa theo đúng **chuẩn Multi-frame Zstandard của DSH** (Frame 0: header duy nhất; Frame 1: events), loại bỏ 100% nguy cơ session bị hỏng hay biến mất khỏi UI.
+- 📦 **Thùng rác an toàn (Safe Trash - Không lo mất dữ liệu)**:
+  - Khi xóa hoặc dọn dẹp, session được chuyển vào `~/.dsh/trash/sessions/` thay vì xóa vĩnh viễn (`rm -rf`).
+  - Dễ dàng **phục hồi nguyên trạng 1-click** bất cứ lúc nào!
+- 💾 **Sao lưu & Phục hồi độc lập (Backup & Restore)**: Tạo snapshot session dự phòng bất cứ lúc nào và khôi phục khi cần.
+- 🖥️ **Tích hợp giao diện Web DSH**: Tab **Session Doctor** trên Right Sidebar với 4 chế độ: Bị kẹt, Tất cả, Thùng rác, Bản sao lưu.
+- 🤖 **Agent Tool (`session_cleaner`)**: Cho phép AI Agent tự chẩn đoán, cứu session hoặc dọn dẹp theo yêu cầu.
+- ⚡ **Terminal CLI đầy đủ**: `scan`, `unstick`, `backup`, `restore-backup`, `trash`, `list-trash`, `restore-trash`.
 
 ## 🚀 Cài đặt & Kích hoạt
 
-1. Link hoặc thêm vào profile `~/.dsh/profiles/web/`:
+1. Cài đặt vào profile `~/.dsh/profiles/web/`:
 ```bash
 cd ~/.dsh/profiles/web
-npm install /Users/trantandat/GIC/Freelancer/dsh-session-cleaner
+npm install github:datit309/dsh-session-cleaner
 ```
 
-2. Thêm vào `cordis.patch.yml`:
+2. Thêm vào `cordis.patch.yml` nếu cần:
 ```yaml
 - insert:
     - id: dsh-session-cleaner
@@ -33,19 +38,39 @@ npm install /Users/trantandat/GIC/Freelancer/dsh-session-cleaner
 # Quét toàn bộ sessions và xem trạng thái
 dsh-session-cleaner scan
 
-# Xóa tất cả các session đang bị kẹt lỗi 400
-dsh-session-cleaner clean-stuck
-
-# Cứu 1 session (rollback lượt lỗi cuối để chat tiếp)
+# Cứu session (tự động sao lưu trước khi rollback)
 dsh-session-cleaner unstick <sessionId>
 
-# Xóa 1 session cụ thể
-dsh-session-cleaner delete <sessionId>
+# Tạo bản sao lưu an toàn
+dsh-session-cleaner backup <sessionId>
+
+# Phục hồi session từ bản sao lưu
+dsh-session-cleaner restore-backup <sessionId>
+
+# Chuyển session vào Thùng rác an toàn
+dsh-session-cleaner trash <sessionId>
+
+# Chuyển tất cả session bị lỗi vào Thùng rác
+dsh-session-cleaner clean-stuck
+
+# Xem danh sách các session trong Thùng rác
+dsh-session-cleaner list-trash
+
+# Khôi phục session từ Thùng rác về DSH Web
+dsh-session-cleaner restore-trash <sessionId>
+
+# Dọn sạch vĩnh viễn Thùng rác
+dsh-session-cleaner empty-trash
 ```
 
 ## 🛠️ REST API Endpoints
 
-- `GET /api/session-cleaner/scan`: Danh sách session và số lượng bị kẹt.
-- `POST /api/session-cleaner/delete`: Xóa session (`{ "sessionId": "..." }`).
-- `POST /api/session-cleaner/delete-stuck`: Xóa toàn bộ session kẹt.
-- `POST /api/session-cleaner/unstick`: Cứu session lỗi (`{ "sessionId": "..." }`).
+- `GET /api/session-cleaner/scan`: Danh sách session, số lượng kẹt, thùng rác, bản sao lưu.
+- `POST /api/session-cleaner/unstick`: Cứu session lỗi (`{ "sessionId": "...", "targetTurn": 5 }`).
+- `POST /api/session-cleaner/delete`: Chuyển session vào thùng rác (`{ "sessionId": "..." }`).
+- `POST /api/session-cleaner/delete-stuck`: Chuyển tất cả session kẹt vào thùng rác.
+- `GET /api/session-cleaner/trash`: Danh sách session trong thùng rác.
+- `POST /api/session-cleaner/restore-trash`: Phục hồi session từ thùng rác (`{ "sessionId": "..." }`).
+- `GET /api/session-cleaner/backups`: Danh sách bản sao lưu.
+- `POST /api/session-cleaner/backup`: Tạo bản sao lưu (`{ "sessionId": "..." }`).
+- `POST /api/session-cleaner/restore-backup`: Phục hồi từ bản sao lưu (`{ "sessionId": "..." }`).

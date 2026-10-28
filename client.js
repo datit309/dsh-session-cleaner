@@ -13,7 +13,14 @@ window.__ModuleLoader__.load({
     const TAB_KIND = 'session-doctor';
 
     let globalCtx = null;
-    let sharedScanData = { sessions: [], stuckCount: 0, totalCount: 0, loading: false };
+    let sharedScanData = {
+      sessions: [],
+      stuckCount: 0,
+      totalCount: 0,
+      trashCount: 0,
+      backupCount: 0,
+      loading: false
+    };
     const scanListeners = new Set();
 
     function notifyScan() {
@@ -34,6 +41,8 @@ window.__ModuleLoader__.load({
               sessions: json.sessions || [],
               stuckCount: json.stuckCount || 0,
               totalCount: json.totalCount || 0,
+              trashCount: json.trashCount || 0,
+              backupCount: json.backupCount || 0,
               loading: false,
               lastScanTime: Date.now()
             };
@@ -48,10 +57,8 @@ window.__ModuleLoader__.load({
       notifyScan();
     }
 
-    // Auto scan on initial boot
     setTimeout(() => { triggerScan(); }, 1500);
 
-    // CSS Stylesheet
     const STYLE_ID = 'dsh-session-cleaner-styles';
     if (!document.getElementById(STYLE_ID)) {
       const styleEl = document.createElement('style');
@@ -163,13 +170,31 @@ window.__ModuleLoader__.load({
           background: #0369a1;
         }
 
-        .dsc-btn-delete {
-          background: #fee2e2;
-          color: #b91c1c;
-          border-color: #fca5a5;
+        .dsc-btn-backup {
+          background: #e0e7ff;
+          color: #4338ca;
+          border-color: #c7d2fe;
         }
-        .dsc-btn-delete:hover:not(:disabled) {
-          background: #fecaca;
+        .dsc-btn-backup:hover:not(:disabled) {
+          background: #c7d2fe;
+        }
+
+        .dsc-btn-trash {
+          background: #fef2f2;
+          color: #b91c1c;
+          border-color: #fecaca;
+        }
+        .dsc-btn-trash:hover:not(:disabled) {
+          background: #fee2e2;
+        }
+
+        .dsc-btn-restore {
+          background: #ecfdf5;
+          color: #047857;
+          border-color: #a7f3d0;
+        }
+        .dsc-btn-restore:hover:not(:disabled) {
+          background: #d1fae5;
         }
 
         .dsc-filter-bar {
@@ -179,6 +204,7 @@ window.__ModuleLoader__.load({
           gap: 6px;
           border-bottom: 1px solid var(--ds-color-border, #e2e8f0);
           background: var(--ds-color-bg, #ffffff);
+          overflow-x: auto;
         }
 
         .dsc-tab-btn {
@@ -190,6 +216,7 @@ window.__ModuleLoader__.load({
           border: none;
           background: transparent;
           color: var(--ds-color-text-subtle, #64748b);
+          white-space: nowrap;
         }
         .dsc-tab-btn.active {
           background: var(--ds-color-surface, #e2e8f0);
@@ -334,8 +361,10 @@ window.__ModuleLoader__.load({
 
     function SessionCleanerPane() {
       const [scanData, setScanData] = React.useState(sharedScanData);
-      const [filter, setFilter] = React.useState('stuck'); // 'stuck' | 'all'
+      const [filter, setFilter] = React.useState('stuck'); // 'stuck' | 'all' | 'trash' | 'backups'
       const [actionLoading, setActionLoading] = React.useState(null);
+      const [trashItems, setTrashItems] = React.useState([]);
+      const [backupItems, setBackupItems] = React.useState([]);
 
       React.useEffect(() => {
         const fn = () => setScanData({ ...sharedScanData });
@@ -343,19 +372,48 @@ window.__ModuleLoader__.load({
         return () => scanListeners.delete(fn);
       }, []);
 
-      const handleUnstick = async (sessionId) => {
-        if (!confirm(`Cứu session này bằng cách rollback lại lượt lỗi cuối?\nBạn sẽ có thể chat tiếp bình thường.`)) return;
+      const fetchTrash = async () => {
+        try {
+          const res = await fetch('/api/session-cleaner/trash');
+          if (res.ok) {
+            const data = await res.json();
+            if (data.ok) setTrashItems(data.items || []);
+          }
+        } catch {}
+      };
+
+      const fetchBackups = async () => {
+        try {
+          const res = await fetch('/api/session-cleaner/backups');
+          if (res.ok) {
+            const data = await res.json();
+            if (data.ok) setBackupItems(data.items || []);
+          }
+        } catch {}
+      };
+
+      React.useEffect(() => {
+        if (filter === 'trash') fetchTrash();
+        if (filter === 'backups') fetchBackups();
+      }, [filter]);
+
+      const handleUnstick = async (sessionId, targetHealthyTurn) => {
+        const msg = targetHealthyTurn > 0
+          ? `Cứu session này bằng cách rollback về Turn ${targetHealthyTurn} (lượt thành công cuối)?\n\n✓ Tự động lưu bản backup an toàn trước khi xử lý.\n✓ Bạn có thể chat tiếp bình thường sau khi unstick.`
+          : `Cứu session này bằng cách rollback về tin nhắn đầu tiên?\n\n✓ Tự động lưu bản backup an toàn trước khi xử lý.`;
+        if (!confirm(msg)) return;
         setActionLoading(sessionId);
         try {
           const res = await fetch('/api/session-cleaner/unstick', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId })
+            body: JSON.stringify({ sessionId, targetTurn: targetHealthyTurn })
           });
           const json = await res.json();
           if (json.ok) {
             alert(`✅ ${json.message || 'Cứu session thành công!'}`);
             await triggerScan();
+            await fetchBackups();
           } else {
             alert(`❌ Lỗi: ${json.error}`);
           }
@@ -365,8 +423,30 @@ window.__ModuleLoader__.load({
         setActionLoading(null);
       };
 
-      const handleDelete = async (sessionId) => {
-        if (!confirm(`Xác nhận xóa vĩnh viễn session:\n${sessionId}?\nThao tác này không thể hoàn tác.`)) return;
+      const handleBackup = async (sessionId) => {
+        setActionLoading(sessionId);
+        try {
+          const res = await fetch('/api/session-cleaner/backup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, reason: 'user_click' })
+          });
+          const json = await res.json();
+          if (json.ok) {
+            alert(`✅ Đã sao lưu an toàn vào ~/.dsh/session-backups/`);
+            await triggerScan();
+            await fetchBackups();
+          } else {
+            alert(`❌ Lỗi sao lưu: ${json.error}`);
+          }
+        } catch (e) {
+          alert(`❌ Lỗi kết nối: ${e.message}`);
+        }
+        setActionLoading(null);
+      };
+
+      const handleTrash = async (sessionId) => {
+        if (!confirm(`Chuyển session này vào Thùng rác an toàn?\n\n💡 Bạn có thể khôi phục lại bất kỳ lúc nào từ tab Thùng rác.`)) return;
         setActionLoading(sessionId);
         try {
           const res = await fetch('/api/session-cleaner/delete', {
@@ -377,8 +457,9 @@ window.__ModuleLoader__.load({
           const json = await res.json();
           if (json.ok) {
             await triggerScan();
+            await fetchTrash();
           } else {
-            alert(`❌ Lỗi xóa: ${json.error}`);
+            alert(`❌ Lỗi: ${json.error}`);
           }
         } catch (e) {
           alert(`❌ Lỗi kết nối: ${e.message}`);
@@ -386,8 +467,8 @@ window.__ModuleLoader__.load({
         setActionLoading(null);
       };
 
-      const handleDeleteAllStuck = async () => {
-        if (!confirm(`Xác nhận xóa TẤT CẢ ${scanData.stuckCount} sessions đang bị kẹt lỗi 400?`)) return;
+      const handleTrashAllStuck = async () => {
+        if (!confirm(`Chuyển TẤT CẢ ${scanData.stuckCount} session bị lỗi vào Thùng rác an toàn?\n\n💡 Các session này không bị xóa mất mà được cất trong Thùng rác, có thể phục hồi lại bất cứ lúc nào.`)) return;
         setActionLoading('all');
         try {
           const res = await fetch('/api/session-cleaner/delete-stuck', {
@@ -397,7 +478,52 @@ window.__ModuleLoader__.load({
           });
           const json = await res.json();
           if (json.ok) {
-            alert(`🎉 Đã xóa thành công ${json.deletedCount} sessions bị kẹt!`);
+            alert(`🎉 Đã chuyển ${json.deletedCount} session vào Thùng rác an toàn!`);
+            await triggerScan();
+            await fetchTrash();
+          } else {
+            alert(`❌ Lỗi: ${json.error}`);
+          }
+        } catch (e) {
+          alert(`❌ Lỗi kết nối: ${e.message}`);
+        }
+        setActionLoading(null);
+      };
+
+      const handleRestoreTrash = async (sessionId) => {
+        setActionLoading(sessionId);
+        try {
+          const res = await fetch('/api/session-cleaner/restore-trash', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId })
+          });
+          const json = await res.json();
+          if (json.ok) {
+            alert(`✅ ${json.message}`);
+            await triggerScan();
+            await fetchTrash();
+          } else {
+            alert(`❌ Lỗi phục hồi: ${json.error}`);
+          }
+        } catch (e) {
+          alert(`❌ Lỗi kết nối: ${e.message}`);
+        }
+        setActionLoading(null);
+      };
+
+      const handleRestoreBackup = async (sessionId, timestamp) => {
+        if (!confirm(`Khôi phục session từ bản sao lưu này?\nCác thay đổi sau thời điểm này sẽ được thay thế bằng bản backup.`)) return;
+        setActionLoading(`${sessionId}_${timestamp}`);
+        try {
+          const res = await fetch('/api/session-cleaner/restore-backup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, timestamp })
+          });
+          const json = await res.json();
+          if (json.ok) {
+            alert(`✅ ${json.message}`);
             await triggerScan();
           } else {
             alert(`❌ Lỗi: ${json.error}`);
@@ -406,6 +532,18 @@ window.__ModuleLoader__.load({
           alert(`❌ Lỗi kết nối: ${e.message}`);
         }
         setActionLoading(null);
+      };
+
+      const handleEmptyTrash = async () => {
+        if (!confirm('Xác nhận dọn sạch vĩnh viễn Thùng rác? Thao tác này không thể hoàn tác.')) return;
+        try {
+          const res = await fetch('/api/session-cleaner/empty-trash', { method: 'POST' });
+          const json = await res.json();
+          if (json.ok) {
+            await fetchTrash();
+            await triggerScan();
+          }
+        } catch {}
       };
 
       const sessions = scanData.sessions || [];
@@ -417,7 +555,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dsc-title-row' },
             h('div', { className: 'dsc-title' },
               h('span', null, '🩺'),
-              h('span', null, 'Session Doctor & Cleaner')
+              h('span', null, 'Session Doctor & Safe Cleaner')
             ),
             h('span', {
               className: `dsc-stats-badge ${scanData.stuckCount > 0 ? 'has-stuck' : 'healthy'}`
@@ -431,9 +569,9 @@ window.__ModuleLoader__.load({
             }, scanData.loading ? '⏳ Đang quét...' : '🔄 Quét lại'),
             scanData.stuckCount > 0 && h('button', {
               className: 'dsc-btn dsc-btn-primary',
-              onClick: handleDeleteAllStuck,
+              onClick: handleTrashAllStuck,
               disabled: scanData.loading || actionLoading !== null
-            }, `🧹 Xóa hết ${scanData.stuckCount} session kẹt`)
+            }, `📦 Bỏ ${scanData.stuckCount} kẹt vào Thùng rác`)
           )
         ),
 
@@ -446,11 +584,75 @@ window.__ModuleLoader__.load({
           h('button', {
             className: `dsc-tab-btn ${filter === 'all' ? 'active' : ''}`,
             onClick: () => setFilter('all')
-          }, `Tất cả (${scanData.totalCount})`)
+          }, `💬 Tất cả (${scanData.totalCount})`),
+          h('button', {
+            className: `dsc-tab-btn ${filter === 'trash' ? 'active' : ''}`,
+            onClick: () => setFilter('trash')
+          }, `🗑️ Thùng rác (${scanData.trashCount})`),
+          h('button', {
+            className: `dsc-tab-btn ${filter === 'backups' ? 'active' : ''}`,
+            onClick: () => setFilter('backups')
+          }, `💾 Bản sao lưu (${scanData.backupCount})`)
         ),
 
-        // Session List
-        h('div', { className: 'dsc-list' },
+        // Body List
+        filter === 'trash' ? h('div', { className: 'dsc-list' },
+          trashItems.length === 0 ? h('div', {
+            style: { textAlign: 'center', padding: '40px 10px', color: '#64748b' }
+          }, 'Thùng rác trống.') :
+          h('div', null,
+            h('div', { style: { display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' } },
+              h('button', {
+                className: 'dsc-btn dsc-btn-trash',
+                onClick: handleEmptyTrash
+              }, '🔥 Dọn sạch Thùng rác')
+            ),
+            trashItems.map(t => h('div', {
+              key: `${t.sessionId}_${t.timestamp}`,
+              className: 'dsc-card'
+            },
+              h('div', { className: 'dsc-card-top' },
+                h('div', { className: 'dsc-card-title' }, t.sessionId),
+                h('span', { className: 'dsc-badge-stuck' }, 'TRASH')
+              ),
+              h('div', { className: 'dsc-card-meta' },
+                h('span', null, `📁 ${t.workspaceKey}`),
+                h('span', null, `🕒 ${formatTimeAgo(t.timestamp)}`)
+              ),
+              h('div', { className: 'dsc-card-actions' },
+                h('button', {
+                  className: 'dsc-btn dsc-btn-restore',
+                  onClick: () => handleRestoreTrash(t.sessionId),
+                  disabled: actionLoading === t.sessionId
+                }, '♻️ Khôi phục lại DSH Web')
+              )
+            ))
+          )
+        ) : filter === 'backups' ? h('div', { className: 'dsc-list' },
+          backupItems.length === 0 ? h('div', {
+            style: { textAlign: 'center', padding: '40px 10px', color: '#64748b' }
+          }, 'Chưa có bản sao lưu nào.') :
+          backupItems.map(b => h('div', {
+            key: `${b.sessionId}_${b.timestamp}`,
+            className: 'dsc-card'
+          },
+            h('div', { className: 'dsc-card-top' },
+              h('div', { className: 'dsc-card-title' }, b.sessionId),
+              h('span', { className: 'dsc-badge-ok' }, b.reason || 'BACKUP')
+            ),
+            h('div', { className: 'dsc-card-meta' },
+              h('span', null, `🕒 ${formatTimeAgo(b.timestamp)}`),
+              h('span', null, `📁 ${b.workspaceKey || 'DSH'}`)
+            ),
+            h('div', { className: 'dsc-card-actions' },
+              h('button', {
+                className: 'dsc-btn dsc-btn-restore',
+                onClick: () => handleRestoreBackup(b.sessionId, b.timestamp),
+                disabled: actionLoading === `${b.sessionId}_${b.timestamp}`
+              }, '♻️ Phục hồi bản này')
+            )
+          ))
+        ) : h('div', { className: 'dsc-list' },
           displayed.length === 0 ? h('div', {
             style: { textAlign: 'center', padding: '40px 10px', color: '#64748b' }
           }, filter === 'stuck' ? '🎉 Tuyệt vời! Không có session nào bị kẹt lỗi.' : 'Không có session nào.') :
@@ -479,14 +681,19 @@ window.__ModuleLoader__.load({
               h('div', { className: 'dsc-card-actions' },
                 s.isStuck && h('button', {
                   className: 'dsc-btn dsc-btn-unstick',
-                  onClick: () => handleUnstick(s.id),
+                  onClick: () => handleUnstick(s.id, s.targetHealthyTurn),
                   disabled: isLoading
-                }, isLoading ? '...' : '🩹 Cứu session'),
+                }, isLoading ? '...' : `🩹 Cứu session (về Turn ${s.targetHealthyTurn || 1})`),
                 h('button', {
-                  className: 'dsc-btn dsc-btn-delete',
-                  onClick: () => handleDelete(s.id),
+                  className: 'dsc-btn dsc-btn-backup',
+                  onClick: () => handleBackup(s.id),
                   disabled: isLoading
-                }, isLoading ? '...' : '🗑️ Xóa')
+                }, '💾 Sao lưu'),
+                h('button', {
+                  className: 'dsc-btn dsc-btn-trash',
+                  onClick: () => handleTrash(s.id),
+                  disabled: isLoading
+                }, isLoading ? '...' : '📦 Thùng rác')
               )
             );
           })
@@ -566,7 +773,7 @@ window.__ModuleLoader__.load({
                 id: 'session-doctor',
                 order: 3,
                 title: () => 'Session Doctor',
-                description: () => 'Unstick & Clean Corrupted Sessions'
+                description: () => 'Unstick, Backup & Safe Clean Sessions'
               }]
             });
           }, 'dsh-session-cleaner: tab registration');
